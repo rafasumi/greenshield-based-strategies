@@ -1,0 +1,15 @@
+<?xml version="1.0"?>   
+<configuration>
+	<input>
+		<net-file value="sim.net.xml"/>
+		<route-files value="sim.rou.xml"/>
+		<!-- <additional-files>sim.geometry.xml</additional-files> -->
+	</input>
+
+	<netstate-dump value="sim.netdmp.xml"/>
+
+	<simulation>
+		<begin value="0"/>
+		<end value="10000"/>
+	</simulation>
+</configuration>
