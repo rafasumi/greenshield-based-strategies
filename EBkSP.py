@@ -286,7 +286,7 @@ def start_simulation(sumo, scenario, network, begin, end, interval, output, k, d
     
     logging.debug("Starting SUMO as a server")
     
-    sumo = subprocess.Popen([sumo, "-c", scenario, "--tripinfo-output", output, "--device.emissions.probability", "--remote-port", str(remote_port)], stdout=sys.stdout, stderr=sys.stderr)    
+    sumo = subprocess.Popen([sumo, "-c", scenario, "--tripinfo-output", output, "--device.emissions.probability", "1.0", "--remote-port", str(remote_port)], stdout=sys.stdout, stderr=sys.stderr)    
     unused_port_lock.release()
             
     try:     
