@@ -94,7 +94,7 @@ def build_road_graph(network):
         source_edge = connection_tag["from"]        
         dest_edge = connection_tag["to"]
                 
-        graph.add_edge(source_edge.encode("ascii"), dest_edge.encode("ascii"), length=edges_length[source_edge], weight=0, congestion=False, fp_counter=0)
+        graph.add_edge(source_edge.encode("ascii"), dest_edge.encode("ascii"), length=edges_length[source_edge], weight=0, fp_counter=0)
 
     return graph
 
@@ -127,8 +127,8 @@ def update_road_attributes(graph, time, begin_of_cycle, delta):
     
     # Valor default do Car-Following Model
     minGap = 2.5
-    # Valor default definido no sim.rou.xml
-    avgVehicleLength = 5.0
+    
+    congestedRoads = set()
     
     for road in list(graph.nodes):
         travel_time = traci.edge.getAdaptedTraveltime(road.encode("ascii"), time)
@@ -136,11 +136,13 @@ def update_road_attributes(graph, time, begin_of_cycle, delta):
             travel_time = traci.edge.getTraveltime(road.encode("ascii"))
         
         for successor_road in list(graph.sucessors(road)):
-            # If it is the first measurement in a cycle, then do not compute the mean
             Ki = traci.edge.getLastStepVehicleNumber(road.encode("ascii"))
+            avgVehicleLength = traci.edge.getLastStepLength(road.encode("ascii"))
             Kjam = graph.edges[road, successor_road]["length"]/(avgVehicleLength+minGap)
-            graph.edges[road, successor_road]["congested"] = (Ki/Kjam) > delta
+            if (Ki/Kjam) > delta:
+                congestedRoads.add(road.encode("ascii"))
 
+            # If it is the first measurement in a cycle, then do not compute the mean
             if begin_of_cycle:
                 graph.edges[road, successor_road]["weight"] = travel_time
             else:
@@ -148,12 +150,12 @@ def update_road_attributes(graph, time, begin_of_cycle, delta):
                 t = t if t > 0 else travel_time
                 graph.edges[road, successor_road]["weight"] = t
 
-    return graph
+    return (graph, congestedRoads)
 
-def get_sorted_vehicles(method, time):
+def sort_by_urgency(vehicles, method, time):
     vehicle_dict = {}
     
-    for vehicle in traci.vehicle.getIDList():
+    for vehicle in vehicles:
         edgeID = traci.vehicle.getRoadID(vehicle)
         RemTT = traci.vehicle.getAdaptedTraveltime(vehicle, time, edgeID)
         lane = traci.vehicle.getLaneID(vehicle)
@@ -168,7 +170,7 @@ def get_sorted_vehicles(method, time):
     
     return sorted(vehicle_dict, key=vehicle_dict.get)
 
-# RkSP rerouting
+# DSP and RkSP rerouting
 def reroute_vehicles(graph, K):
     simple_paths = []
 
@@ -192,9 +194,42 @@ def reroute_vehicles(graph, K):
             aux = route[0:route.index(source)]
             aux += new_route
             traci.vehicle.setRoute(vehicle, aux)
-        
-              
-def run(network, begin, end, interval, K, delta, urgency):
+
+def ebksp_reroute(vehicles, graph, K):
+    simple_paths = []
+
+    for vehicle in vehicles:
+        source = traci.vehicle.getRoadID(vehicle)
+        if source.startswith(":"): continue
+        route = traci.vehicle.getRoute(vehicle)
+        destination = route[-1]
+                                       
+        if source != destination:
+            logging.debug("Calculating shortest paths for pair (%s, %s)" % (source, destination))
+            paths = []
+            simple_paths = []
+            k_paths_lengths, k_paths = k_shortest_paths(graph, source, destination, 1, "weight")
+            for path in k_paths:
+                paths.append(path)
+                simple_paths.append(path)
+
+            k = random.randrange(0, K)
+            new_route = simple_paths[0]
+            aux = route[0:route.index(source)]
+            aux += new_route
+            traci.vehicle.setRoute(vehicle, aux)
+
+def select_vehicles(graph, congestedRoads, L):
+    reverseGraph = nx.DiGraph.reverse(graph)
+    selectedVehicles = set()
+    
+    for road in congestedRoads:
+        for edge in list(nx.bfs_edges(reverseGraph, road, depth_limit=L)):
+            selectedVehicles = selectedVehicles.union(set(traci.edge.getLastStepVehicleIDs(edge[0])))
+    
+    return selectedVehicles
+
+def run(network, begin, end, interval, K, delta, urgency, level):
     logging.debug("Building road graph")         
     road_graph_travel_time = build_road_graph(network)
     logging.debug("Finding all simple paths")
@@ -214,14 +249,22 @@ def run(network, begin, end, interval, K, delta, urgency):
         log_densidade_speed(step) 
         logging.debug("Simulation time %d" % step)
         
-        # Update edge weights
         if step >= travel_time_cycle_begin and travel_time_cycle_begin <= end:
             logging.debug("Updating travel time on roads at simulation time %d" % step)
-            road_graph_travel_time = update_road_attributes(road_graph_travel_time, step, travel_time_cycle_begin == step, delta)
+            road_graph_travel_time, congestedRoads = update_road_attributes(road_graph_travel_time, step, travel_time_cycle_begin == step, delta)
+            
+            selectedVehicles = select_vehicles(road_graph_travel_time, congestedRoads, level)
+            sortedVehicles = sort_by_urgency(selectedVehicles, urgency, step)
+            if step % interval == 0 and len(congestedRoads) > 0:
+                logging.debug("Rerouting vehicles at simulation time %d" % step)
+                ebksp_reroute(sortedVehicles, road_graph_travel_time, K)
 
-        if step >= travel_time_cycle_begin and travel_time_cycle_begin <= end and step%interval == 0:
-            logging.debug("Rerouting vehicles at simulation time %d" % step)
-            reroute_vehicles(road_graph_travel_time, K)           
+        # if step >= travel_time_cycle_begin and travel_time_cycle_begin <= end and step%interval == 0:
+        #     logging.debug("Rerouting vehicles at simulation time %d" % step)
+        #     reroute_vehicles(road_graph_travel_time, K)           
+        
+        # TO-DO: popularidade
+        # TO-DO: footprint
 
         step += 1                                
     
@@ -231,7 +274,7 @@ def run(network, begin, end, interval, K, delta, urgency):
     sys.stdout.flush()
     time.sleep(10)
         
-def start_simulation(sumo, scenario, network, begin, end, interval, output, k, delta, urgency):
+def start_simulation(sumo, scenario, network, begin, end, interval, output, k, delta, urgency, level):
     logging.debug("Finding unused port")
     
     unused_port_lock = UnusedPortLock()
@@ -247,7 +290,7 @@ def start_simulation(sumo, scenario, network, begin, end, interval, output, k, d
             
     try:     
         traci.init(remote_port)    
-        run(network, begin, end, interval, k, delta, urgency)
+        run(network, begin, end, interval, k, delta, urgency, level)
     except Exception, e:
         logging.exception("Something bad happened")
     finally:
@@ -280,7 +323,7 @@ def main():
     if args:
         logging.warning("Superfluous command line arguments: \"%s\"" % " ".join(args))
         
-    start_simulation(options.command, options.scenario, options.network, options.begin, options.end, options.interval, options.output, options.k, options.delta, options.urgency)
+    start_simulation(options.command, options.scenario, options.network, options.begin, options.end, options.interval, options.output, options.k, options.delta, options.urgency, options.level)
     
 if __name__ == "__main__":
     main()    
