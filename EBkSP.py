@@ -243,7 +243,7 @@ def run(network, begin, end, interval, K, delta, urgency, level):
     # The time at which a cycle for collecting travel time measurements begins
     travel_time_cycle_begin = interval
 
-    while step == 1 or traci.simulation.getMinExpectedNumber() > 0:
+    while step == 1 or traci.simulation.getMinExpectedNumber() > 0 or step != end:
         logging.debug("Minimum expected number of vehicles: %d" % traci.simulation.getMinExpectedNumber())
         traci.simulationStep()
         log_densidade_speed(step) 
@@ -285,7 +285,7 @@ def start_simulation(sumo, scenario, network, begin, end, interval, output, k, d
     
     logging.debug("Starting SUMO as a server")
     
-    sumo = subprocess.Popen([sumo, "-c", scenario, "--tripinfo-output", output, "--device.hbefa.probability", "1.0", "--remote-port", str(remote_port)], stdout=sys.stdout, stderr=sys.stderr)    
+    sumo = subprocess.Popen([sumo, "-c", scenario, "--tripinfo-output", output, "--remote-port", str(remote_port)], stdout=sys.stdout, stderr=sys.stderr)    
     unused_port_lock.release()
             
     try:     
