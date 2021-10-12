@@ -225,7 +225,7 @@ def select_vehicles(graph, congestedRoads, L):
     selectedVehicles = set()
     
     for road in congestedRoads:
-        for edge in list(nx.bfs_edges(reverseGraph, road, depth_limit=L)):
+        for edge in list(nx.bfs_edges(reverseGraph, source=road, depth_limit=L)):
             selectedVehicles = selectedVehicles.union(set(traci.edge.getLastStepVehicleIDs(edge[0])))
     
     return selectedVehicles
