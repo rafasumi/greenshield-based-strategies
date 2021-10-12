@@ -136,7 +136,7 @@ def update_road_attributes(graph, time, begin_of_cycle, delta):
         if travel_time <= 0:
             travel_time = traci.edge.getTraveltime(road.encode("ascii"))
         
-        for successor_road in list(graph.sucessors(road)):
+        for successor_road in list(graph.successors(road)):
             Ki = traci.edge.getLastStepVehicleNumber(road.encode("ascii"))
             avgVehicleLength = traci.edge.getLastStepLength(road.encode("ascii"))
             Kjam = graph.edges[road, successor_road]["length"]/(avgVehicleLength+minGap)
