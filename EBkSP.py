@@ -120,7 +120,7 @@ def log_densidade_speed(time):
         traveltime = traci.vehicle.getAdaptedTraveltime(v, time, edge)
         speed.append(float(distance)/float(time))
     
-    if len(speed > 0):
+    if len(speed) > 0:
         output.write(str(np.amin(speed) * 3.6) + '\t' + str(np.average(speed) * 3.6) + '\t' + str(np.amax(speed) * 3.6) + '\t' + str(density)+'\n')
 
 def update_road_attributes(graph, time, begin_of_cycle, delta):
