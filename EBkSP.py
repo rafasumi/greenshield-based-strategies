@@ -84,7 +84,7 @@ def build_road_graph(network):
         lane_tag = edge_tag.find("lane")
         
         edge_id = edge_tag["id"]
-        edge_length = int(float(lane_tag["length"]))
+        edge_length = float(lane_tag["length"])
         
         edges_length[edge_id] = edge_length
     
