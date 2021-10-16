@@ -165,8 +165,6 @@ def update_road_attributes(graph, time, begin_of_cycle, delta):
 
 
 def dsp_reroute(vehicles, graph):
-    simple_paths = []
-
     for vehicle in vehicles:
         source = traci.vehicle.getRoadID(vehicle)
         if source.startswith(":"):
@@ -176,15 +174,9 @@ def dsp_reroute(vehicles, graph):
 
         if source != destination:
             logging.debug("Calculating shortest paths for pair (%s, %s)" % (source, destination))
-            simple_paths = []
-            paths = nx.dijkstra_path(graph, source, destination, weight='weight')
-            for path in paths:
-                simple_paths.append(path)
-
-            new_route = simple_paths[0]
-            aux = route[0:route.index(source)]
-            aux += new_route
-            traci.vehicle.setRoute(vehicle, aux)
+            path = nx.dijkstra_path(graph, source, destination, weight='weight')
+            
+            traci.vehicle.setRoute(vehicle, path)
 
 
 def select_vehicles(graph, congestedRoads, L):
