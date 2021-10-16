@@ -97,7 +97,7 @@ def build_road_graph(network):
         source_edge = connection_tag["from"]
         dest_edge = connection_tag["to"]
 
-        graph.add_edge(source_edge.encode("ascii"), dest_edge.encode("ascii"), length=edges_length[source_edge], weight=0, fp_counter=0)
+        graph.add_edge(source_edge.encode("ascii"), dest_edge.encode("ascii"), length=edges_length[source_edge], weight=0)
 
     return graph
 
@@ -287,7 +287,7 @@ def main():
                       help="The simulation time (s) at which the re-routing ends [default: %default]", metavar="END")
     parser.add_option("-i", "--interval", dest="interval", type="int", default=600, action="store",
                       help="The interval (s) of classification [default: %default]", metavar="INTERVAL")
-    parser.add_option("-o", "--output", dest="output", default="output/reroute.xml",
+    parser.add_option("-o", "--output", dest="output", default="output/DSP-tripinfo.xml",
                       help="The XML file at which the output must be written [default: %default]", metavar="FILE")
     parser.add_option("--logfile", dest="logfile", default="log/sumo-launchd.log",
                       help="log messages to logfile [default: %default]", metavar="FILE")
