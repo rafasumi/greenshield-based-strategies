@@ -16,7 +16,6 @@ import random
 import networkx as nx
 import numpy as np
 
-from k_shortest_paths import k_shortest_paths
 from optparse import OptionParser
 from bs4 import BeautifulSoup
 
@@ -205,7 +204,7 @@ def select_vehicles(graph, congestedRoads, L):
     return selectedVehicles
 
 
-def run(network, begin, end, interval, delta, urgency, level):
+def run(network, begin, end, interval, delta, level):
     logging.debug("Building road graph")
     road_graph_travel_time = build_road_graph(network)
     logging.debug("Finding all simple paths")
@@ -246,7 +245,7 @@ def run(network, begin, end, interval, delta, urgency, level):
     time.sleep(10)
 
 
-def start_simulation(sumo, scenario, network, begin, end, interval, output, delta, urgency, level):
+def start_simulation(sumo, scenario, network, begin, end, interval, output, delta, level):
     logging.debug("Finding unused port")
 
     unused_port_lock = UnusedPortLock()
@@ -263,7 +262,7 @@ def start_simulation(sumo, scenario, network, begin, end, interval, output, delt
 
     try:
         traci.init(remote_port)
-        run(network, begin, end, interval, delta, urgency, level)
+        run(network, begin, end, interval, delta, level)
     except Exception, e:
         logging.exception("Something bad happened")
     finally:
@@ -295,8 +294,6 @@ def main():
                       action="store", help="Congestion threshold [default: %default]", metavar="DELTA")
     parser.add_option("-l", "--level", dest="level", type="int", default=3, action="store",
                       help="Furthest distance a rerouted vehicle can be from congestion (in number of segments) [default: %default]", metavar="LEVEL")
-    parser.add_option("-u", "--urgency", dest="urgency", default="ACI", action="store",
-                      help="Urgency function used to compute the re-routing priority of a vehicle [default: %default]", metavar="URGENCY")
 
     (options, args) = parser.parse_args()
 
