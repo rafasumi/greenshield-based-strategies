@@ -2,3 +2,4 @@ output/*
 log/*
 !.gitkeep
 *.pyc
+*.netdmp.xml
