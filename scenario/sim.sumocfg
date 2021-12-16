@@ -8,8 +8,14 @@
 
 	<netstate-dump value="sim.netdmp.xml"/>
 
+	<time-to-teleport value="160" />                            
+	<processing>                                
+		<ignore-junction-blocker value="20"/>                                 
+		<!-- <lanechange.allow-swap value="true"/>                     -->
+	</processing>
+
 	<simulation>
 		<begin value="0"/>
-		<end value="10000"/>
+		<end value="-1"/>		
 	</simulation>
 </configuration>
