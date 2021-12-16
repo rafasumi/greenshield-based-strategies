@@ -10,11 +10,9 @@ import socket
 import logging
 import thread
 import time
-import tempfile
-import math
-import random
 import networkx as nx
 import numpy as np
+import math
 
 from k_shortest_paths import k_shortest_paths
 from optparse import OptionParser
@@ -28,6 +26,10 @@ else:
     sys.exit("Environment variable SUMO_HOME not defined")
     
 import traci
+
+# @dev - tentar calcular o valor dinamicamente
+# Valor default do Car-Following Model
+MIN_GAP = 2.5
 
 class UnusedPortLock:
     lock = thread.allocate_lock()
@@ -64,11 +66,11 @@ def terminate_sumo(sumo):
     if sumo.returncode == None:
         os.kill(sumo.pid, signal.SIGTERM)
         time.sleep(0.5)
+        # if sumo.returncode == None:
+        #     os.kill(sumo.pid, signal.SIGKILL)
+        #     time.sleep(1)
         if sumo.returncode == None:
-            os.kill(sumo.pid, signal.SIGKILL)
-            time.sleep(1)
-            if sumo.returncode == None:
-                time.sleep(10)
+            time.sleep(10)
     
 def build_road_graph(network):                
     # Input   
@@ -103,7 +105,7 @@ def log_densidade_speed(time):
     density = len(vehicles)
     speed = []
 
-    output = open('output/average_speed_EBkSP.txt', 'a')
+    output = open('output/output_EBkSP.txt', 'a')
 
     for v in vehicles:
         lane_pos = traci.vehicle.getLanePosition(v)
@@ -123,35 +125,35 @@ def log_densidade_speed(time):
     if len(speed) > 0:
         output.write(str(np.amin(speed) * 3.6) + '\t' + str(np.average(speed) * 3.6) + '\t' + str(np.amax(speed) * 3.6) + '\t' + str(density)+'\n')
 
-def update_road_attributes(graph, time, begin_of_cycle, delta):
-    # @dev - tentar calcular os valores dinamicamente
-    
-    # Valor default do Car-Following Model
-    minGap = 2.5
-    
+def update_road_attributes(graph, time, begin_of_cycle, delta):    
     congestedRoads = set()
     
-    for road in list(graph.nodes):
+    capacity_sum = 0
+    counter = 0
+
+    for road in graph.nodes_iter():
         travel_time = traci.edge.getAdaptedTraveltime(road.encode("ascii"), time)
         if travel_time <= 0:
             travel_time = traci.edge.getTraveltime(road.encode("ascii"))
         
-        for successor_road in list(graph.successors(road)):
+        for successor_road in graph.successors_iter(road):
             Ki = traci.edge.getLastStepVehicleNumber(road.encode("ascii"))
             avgVehicleLength = traci.edge.getLastStepLength(road.encode("ascii"))
-            Kjam = graph.edges[road, successor_road]["length"]/(avgVehicleLength+minGap)
+            Kjam = graph.edge[road][successor_road]["length"]/(avgVehicleLength+MIN_GAP)
+            capacity_sum += Kjam
+            counter += 1
             if (Ki/Kjam) > delta:
                 congestedRoads.add(road.encode("ascii"))
 
             # If it is the first measurement in a cycle, then do not compute the mean
             if begin_of_cycle:
-                graph.edges[road, successor_road]["weight"] = travel_time
+                graph.edge[road][successor_road]["weight"] = travel_time
             else:
-                t = (graph.edges[road, successor_road]["weight"] + travel_time) / 2
+                t = (graph.edge[road][successor_road]["weight"] + travel_time) / 2
                 t = t if t > 0 else travel_time
-                graph.edges[road, successor_road]["weight"] = t
+                graph.edge[road][successor_road]["weight"] = t
 
-    return (graph, congestedRoads)
+    return (graph, congestedRoads, capacity_sum/counter)
 
 def sort_by_urgency(vehicles, method, time):
     vehicle_dict = {}
@@ -171,53 +173,87 @@ def sort_by_urgency(vehicles, method, time):
     
     return sorted(vehicle_dict, key=vehicle_dict.get)
 
-# DSP and RkSP rerouting
-def reroute_vehicles(graph, K):
-    simple_paths = []
+def computePopularity(graph, path, footprint_counter, avgCapacity):
+    N = 0
+    for edge in footprint_counter:
+        N += footprint_counter[edge]
 
-    for vehicle in traci.vehicle.getIDList():
-        source = traci.vehicle.getRoadID(vehicle)
-        if source.startswith(":"): continue
-        route = traci.vehicle.getRoute(vehicle)
-        destination = route[-1]
-                                       
-        if source != destination:
-            logging.debug("Calculating shortest paths for pair (%s, %s)" % (source, destination))
-            paths = []
-            simple_paths = []
-            k_paths_lengths, k_paths = k_shortest_paths(graph, source, destination, 1, "weight")
-            for path in k_paths:
-                paths.append(path)
-                simple_paths.append(path)
+    sum = 0
+    for road in path:
+        for successor_road in graph.successors_iter(road):
+            fc = footprint_counter.get((road, successor_road), 0)
+            if fc == 0: continue
 
-            k = random.randrange(0, K)
-            new_route = simple_paths[0]
-            aux = route[0:route.index(source)]
-            aux += new_route
-            traci.vehicle.setRoute(vehicle, aux)
+            avgVehicleLength = traci.edge.getLastStepLength(road.encode("ascii"))
+            capacity = graph.edge[road][successor_road]["length"]/(avgVehicleLength+MIN_GAP)
+            omega = avgCapacity/capacity
+            
+            sum += omega * fc/N * math.log(fc/N)
 
-def ebksp_reroute(vehicles, graph, K):
-    simple_paths = []
+    return math.exp(-sum)
+
+def getLeastPopularPath(graph, paths, footprint_counter, avgCapacity):
+    leastPopular = None
+    smallestPopularity = np.inf
+    for path in paths:
+        popularity = computePopularity(graph, path, footprint_counter, avgCapacity)
+        if popularity < smallestPopularity:
+            leastPopular = path
+            smallestPopularity = popularity
+    
+    return leastPopular
+
+def ebksp_reroute(graph, vehicles, allPaths, avgCapacity):
+    footprint_counter = {}
+    firstVehicle = True
 
     for vehicle in vehicles:
         source = traci.vehicle.getRoadID(vehicle)
         if source.startswith(":"): continue
         route = traci.vehicle.getRoute(vehicle)
         destination = route[-1]
-                                       
+
+        if source != destination:
+            paths = allPaths[(source, destination)]
+
+            if firstVehicle:
+                newPath =  paths[0]
+                firstVehicle = False
+            else:
+                newPath = getLeastPopularPath(graph, paths, footprint_counter, avgCapacity)
+
+            traci.vehicle.setRoute(vehicle, newPath)
+
+            for road in newPath:
+                for successor_road in graph.successors_iter(road):
+                    if (road, successor_road) in footprint_counter:
+                        footprint_counter[(road, successor_road)] += 1
+                    else:
+                        footprint_counter[(road, successor_road)] = 1
+
+def updateODPairs(selectedVehicles):
+    odPairs = set()
+    for vehicle in selectedVehicles:
+        source = traci.vehicle.getRoadID(vehicle)
+        if source.startswith(":"): continue
+        route = traci.vehicle.getRoute(vehicle)
+        destination = route[-1]
+
+        odPairs.add((source, destination))
+    
+    return odPairs
+
+def computeAllkShortestPaths(graph, odPairs, K):
+    allPaths = {}
+
+    for source, destination in odPairs:
         if source != destination:
             logging.debug("Calculating shortest paths for pair (%s, %s)" % (source, destination))
-            paths = []
-            simple_paths = []
-            _, k_paths = k_shortest_paths(graph, source, destination, 1, "weight")
-            for path in k_paths:
-                paths.append(path)
-                simple_paths.append(path)
+            _, k_paths = k_shortest_paths(graph, source, destination, K, "weight")
 
-            new_route = simple_paths[0]
-            aux = route[0:route.index(source)]
-            aux += new_route
-            traci.vehicle.setRoute(vehicle, aux)
+            allPaths[(source, destination)] = k_paths
+    
+    return allPaths
 
 def select_vehicles(graph, congestedRoads, L):
     reverseGraph = nx.DiGraph.reverse(graph)
@@ -244,7 +280,7 @@ def select_vehicles(graph, congestedRoads, L):
 
 def run(network, begin, end, interval, K, delta, urgency, level):
     logging.debug("Building road graph")         
-    road_graph_travel_time = build_road_graph(network)
+    road_graph = build_road_graph(network)
     logging.debug("Finding all simple paths")
     
     # Used to enhance performance only
@@ -256,24 +292,24 @@ def run(network, begin, end, interval, K, delta, urgency, level):
     # The time at which a cycle for collecting travel time measurements begins
     travel_time_cycle_begin = interval
 
-    while step == 1 or traci.simulation.getMinExpectedNumber() > 0 or step != end:
+    while step == 1 or traci.simulation.getMinExpectedNumber() > 0:
         logging.debug("Minimum expected number of vehicles: %d" % traci.simulation.getMinExpectedNumber())
         traci.simulationStep()
         log_densidade_speed(step) 
         logging.debug("Simulation time %d" % step)
         
-        if step >= travel_time_cycle_begin and travel_time_cycle_begin <= end:
+        if step >= travel_time_cycle_begin and travel_time_cycle_begin <= end and step % interval == 0:
             logging.debug("Updating travel time on roads at simulation time %d" % step)
-            road_graph_travel_time, congestedRoads = update_road_attributes(road_graph_travel_time, step, travel_time_cycle_begin == step, delta)
+            road_graph, congestedRoads, avg_capacity = update_road_attributes(
+                road_graph, step, travel_time_cycle_begin == step, delta)
             
-            selectedVehicles = select_vehicles(road_graph_travel_time, congestedRoads, level)
-            sortedVehicles = sort_by_urgency(selectedVehicles, urgency, step)
-            if step % interval == 0 and len(congestedRoads) > 0:
+            if len(congestedRoads) > 0:
+                selectedVehicles = select_vehicles(road_graph, congestedRoads, level)
+                sortedVehicles = sort_by_urgency(selectedVehicles, urgency, step)
+                odPairs = updateODPairs(sortedVehicles)
+                allPaths = computeAllkShortestPaths(road_graph, odPairs, K)
                 logging.debug("Rerouting vehicles at simulation time %d" % step)
-                ebksp_reroute(sortedVehicles, road_graph_travel_time, K)     
-        
-        # TO-DO: popularidade
-        # TO-DO: footprint
+                ebksp_reroute(road_graph, sortedVehicles, allPaths, avg_capacity)
 
         step += 1                                
     
@@ -311,8 +347,8 @@ def main():
     # Option handling
     parser = OptionParser()
     parser.add_option("-c", "--command", dest="command", default="sumo", help="The command used to run SUMO [default: %default]", metavar="COMMAND")
-    parser.add_option("-s", "--scenario", dest="scenario", default="sim.sumocfg", help="A SUMO configuration file [default: %default]", metavar="FILE")
-    parser.add_option("-n", "--network", dest="network", default="sim.net.xml", help="A SUMO network definition file [default: %default]", metavar="FILE")    
+    parser.add_option("-s", "--scenario", dest="scenario", default="scenario/sim.sumocfg", help="A SUMO configuration file [default: %default]", metavar="FILE")
+    parser.add_option("-n", "--network", dest="network", default="scenario/sim.net.xml", help="A SUMO network definition file [default: %default]", metavar="FILE")    
     parser.add_option("-b", "--begin", dest="begin", type="int", default=1800, action="store", help="The simulation time (s) at which the re-routing begins [default: %default]", metavar="BEGIN")
     parser.add_option("-e", "--end", dest="end", type="int", default=7200, action="store", help="The simulation time (s) at which the re-routing ends [default: %default]", metavar="END")
     parser.add_option("-i", "--interval", dest="interval", type="int", default=600, action="store", help="The interval (s) of classification [default: %default]", metavar="INTERVAL")

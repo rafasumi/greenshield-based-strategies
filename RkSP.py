@@ -10,9 +10,11 @@ import socket
 import logging
 import thread
 import time
+import random
 import networkx as nx
 import numpy as np
 
+from k_shortest_paths import k_shortest_paths
 from optparse import OptionParser
 from bs4 import BeautifulSoup
 
@@ -98,20 +100,32 @@ def build_road_graph(network):
     return graph
 
 
-def log_output(time):
+def log_densidade_speed(time):
     vehicles = traci.vehicle.getIDList()
     density = len(vehicles)
-    traveltime = []
+    speed = []
+
+    output = open('output/output_RkSP.txt', 'a')
 
     for v in vehicles:
+        lane_pos = traci.vehicle.getLanePosition(v)
         edge = traci.vehicle.getRoadID(v)
-        if edge.startswith(":"): continue
-        traveltime.append(traci.vehicle.getAdaptedTraveltime(v, time, edge))
-    
-    with open('output/output_DSP.txt', 'a') as output:
-        if len(traveltime) > 0:
-            output.write(str(np.amin(traveltime)) + '\t' + str(np.mean(traveltime)) 
-                + '\t' + str(np.amax(traveltime)) + '\t' + str(density)+'\n')
+        if edge.startswith(":"):
+            continue
+        position = traci.vehicle.getPosition(v)
+        route = traci.vehicle.getRoute(v)
+        index = route.index(edge)
+        if index > 0:
+            distance = 500 * (index - 1) + lane_pos
+        else:
+            distance = lane_pos
+
+        traveltime = traci.vehicle.getAdaptedTraveltime(v, time, edge)
+        speed.append(float(distance)/float(time))
+
+    if len(speed) > 0:
+        output.write(str(np.amin(speed) * 3.6) + '\t' + str(np.average(speed)
+                     * 3.6) + '\t' + str(np.amax(speed) * 3.6) + '\t' + str(density)+'\n')
 
 
 def update_road_attributes(graph, time, begin_of_cycle, delta):
@@ -131,7 +145,8 @@ def update_road_attributes(graph, time, begin_of_cycle, delta):
         for successor_road in graph.successors_iter(road):
             Ki = traci.edge.getLastStepVehicleNumber(road.encode("ascii"))
             avgVehicleLength = traci.edge.getLastStepLength(road.encode("ascii"))
-            Kjam = graph.edge[road][successor_road]["length"] / (avgVehicleLength+minGap)
+            Kjam = graph.edge[road][successor_road]["length"] / \
+                (avgVehicleLength+minGap)
             if (Ki/Kjam) > delta:
                 congestedRoads.add(road.encode("ascii"))
 
@@ -139,14 +154,32 @@ def update_road_attributes(graph, time, begin_of_cycle, delta):
             if begin_of_cycle:
                 graph.edge[road][successor_road]["weight"] = travel_time
             else:
-                t = (graph.edge[road][successor_road]["weight"] + travel_time) / 2
+                t = (graph.edge[road][successor_road]
+                    ["weight"] + travel_time) / 2
                 t = t if t > 0 else travel_time
                 graph.edge[road][successor_road]["weight"] = t
 
     return (graph, congestedRoads)
 
+def sort_by_urgency(vehicles, method, time):
+    vehicle_dict = {}
+    
+    for vehicle in vehicles:
+        edgeID = traci.vehicle.getRoadID(vehicle)
+        RemTT = traci.vehicle.getAdaptedTraveltime(vehicle, time, edgeID)
+        lane = traci.vehicle.getLaneID(vehicle)
+        RemFFTT = traci.lane.getLength(lane) / traci.vehicle.getAllowedSpeed(vehicle)
+        
+        if method == "RCI":
+            urgency = (RemTT - RemFFTT)/RemFFTT
+        else:
+            urgency = RemTT - RemFFTT
+        
+        vehicle_dict[vehicle] = urgency
+    
+    return sorted(vehicle_dict, key=vehicle_dict.get)
 
-def dsp_reroute(vehicles, graph):
+def rksp_reroute(vehicles, graph, K):
     for vehicle in vehicles:
         source = traci.vehicle.getRoadID(vehicle)
         if source.startswith(":"):
@@ -156,11 +189,10 @@ def dsp_reroute(vehicles, graph):
 
         if source != destination:
             logging.debug("Calculating shortest paths for pair (%s, %s)" % (source, destination))
-            path = nx.dijkstra_path(graph, source, destination, weight='weight')
-            
-            logging.debug(path)
+            _, k_paths = k_shortest_paths(graph, source, destination, K, "weight")
 
-            traci.vehicle.setRoute(vehicle, path)
+            random_path = random.randrange(0, len(k_paths))
+            traci.vehicle.setRoute(vehicle, k_paths[random_path])
 
 
 def select_vehicles(graph, congestedRoads, L):
@@ -189,7 +221,7 @@ def select_vehicles(graph, congestedRoads, L):
     return selectedVehicles
 
 
-def run(network, begin, end, interval, delta, level):
+def run(network, begin, end, interval, k, delta, urgency, level):
     logging.debug("Building road graph")
     road_graph_travel_time = build_road_graph(network)
     logging.debug("Finding all simple paths")
@@ -207,7 +239,7 @@ def run(network, begin, end, interval, delta, level):
         logging.debug("Minimum expected number of vehicles: %d" %
                       traci.simulation.getMinExpectedNumber())
         traci.simulationStep()
-        log_output(step)
+        log_densidade_speed(step)
         logging.debug("Simulation time %d" % step)
 
         if step >= travel_time_cycle_begin and travel_time_cycle_begin <= end and step % interval == 0:
@@ -218,8 +250,9 @@ def run(network, begin, end, interval, delta, level):
 
             if len(congestedRoads) > 0:
                 selectedVehicles = select_vehicles(road_graph_travel_time, congestedRoads, level)
+                sortedVehicles = sort_by_urgency(selectedVehicles, urgency, step)
                 logging.debug("Rerouting vehicles at simulation time %d" % step)
-                dsp_reroute(selectedVehicles, road_graph_travel_time)
+                rksp_reroute(sortedVehicles, road_graph_travel_time, k)
 
         step += 1
 
@@ -230,7 +263,7 @@ def run(network, begin, end, interval, delta, level):
     time.sleep(10)
 
 
-def start_simulation(sumo, scenario, network, begin, end, interval, output, delta, level):
+def start_simulation(sumo, scenario, network, begin, end, interval, output, k, delta, urgency, level):
     logging.debug("Finding unused port")
 
     unused_port_lock = UnusedPortLock()
@@ -247,7 +280,7 @@ def start_simulation(sumo, scenario, network, begin, end, interval, output, delt
 
     try:
         traci.init(remote_port)
-        run(network, begin, end, interval, delta, level)
+        run(network, begin, end, interval, k, delta, urgency, level)
     except Exception, e:
         logging.exception("Something bad happened")
     finally:
@@ -271,14 +304,18 @@ def main():
                       help="The simulation time (s) at which the re-routing ends [default: %default]", metavar="END")
     parser.add_option("-i", "--interval", dest="interval", type="int", default=600, action="store",
                       help="The interval (s) of classification [default: %default]", metavar="INTERVAL")
-    parser.add_option("-o", "--output", dest="output", default="output/DSP-tripinfo.xml",
+    parser.add_option("-o", "--output", dest="output", default="output/RkSP-tripinfo.xml",
                       help="The XML file at which the output must be written [default: %default]", metavar="FILE")
     parser.add_option("--logfile", dest="logfile", default="log/sumo-launchd.log",
                       help="log messages to logfile [default: %default]", metavar="FILE")
+    parser.add_option("-k", "--k-paths", dest="k", type="int", default=3, action="store",
+                      help="Number o k shortest paths [default: %default]", metavar="K")
     parser.add_option("-d", "--delta", dest="delta", type="float", default=0.7,
                       action="store", help="Congestion threshold [default: %default]", metavar="DELTA")
     parser.add_option("-l", "--level", dest="level", type="int", default=3, action="store",
                       help="Furthest distance a rerouted vehicle can be from congestion (in number of segments) [default: %default]", metavar="LEVEL")
+    parser.add_option("-u", "--urgency", dest="urgency", default="ACI", action="store", 
+                    help="Urgency function used to compute the  re-routing priority of a vehicle [default: %default]", metavar="URGENCY")
 
     (options, args) = parser.parse_args()
 
@@ -289,7 +326,7 @@ def main():
         logging.warning("Superfluous command line arguments: \"%s\"" % " ".join(args))
 
     start_simulation(options.command, options.scenario, options.network, options.begin, options.end,
-                     options.interval, options.output, options.delta, options.level)
+            options.interval, options.output, options.k, options.delta, options.urgency, options.level)
 
 if __name__ == "__main__":
     main()
