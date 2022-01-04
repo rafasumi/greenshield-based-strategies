@@ -161,24 +161,6 @@ def update_road_attributes(graph, time, begin_of_cycle, delta):
 
     return (graph, congestedRoads)
 
-def sort_by_urgency(vehicles, method, time):
-    vehicle_dict = {}
-    
-    for vehicle in vehicles:
-        edgeID = traci.vehicle.getRoadID(vehicle)
-        RemTT = traci.vehicle.getAdaptedTraveltime(vehicle, time, edgeID)
-        lane = traci.vehicle.getLaneID(vehicle)
-        RemFFTT = traci.lane.getLength(lane) / traci.vehicle.getAllowedSpeed(vehicle)
-        
-        if method == "RCI":
-            urgency = (RemTT - RemFFTT)/RemFFTT
-        else:
-            urgency = RemTT - RemFFTT
-        
-        vehicle_dict[vehicle] = urgency
-    
-    return sorted(vehicle_dict, key=vehicle_dict.get)
-
 def rksp_reroute(vehicles, graph, K):
     for vehicle in vehicles:
         source = traci.vehicle.getRoadID(vehicle)
@@ -221,7 +203,7 @@ def select_vehicles(graph, congestedRoads, L):
     return selectedVehicles
 
 
-def run(network, begin, end, interval, k, delta, urgency, level):
+def run(network, begin, end, interval, k, delta, level):
     logging.debug("Building road graph")
     road_graph_travel_time = build_road_graph(network)
     logging.debug("Finding all simple paths")
@@ -250,9 +232,8 @@ def run(network, begin, end, interval, k, delta, urgency, level):
 
             if len(congestedRoads) > 0:
                 selectedVehicles = select_vehicles(road_graph_travel_time, congestedRoads, level)
-                sortedVehicles = sort_by_urgency(selectedVehicles, urgency, step)
                 logging.debug("Rerouting vehicles at simulation time %d" % step)
-                rksp_reroute(sortedVehicles, road_graph_travel_time, k)
+                rksp_reroute(selectedVehicles, road_graph_travel_time, k)
 
         step += 1
 
@@ -263,7 +244,7 @@ def run(network, begin, end, interval, k, delta, urgency, level):
     time.sleep(10)
 
 
-def start_simulation(sumo, scenario, network, begin, end, interval, output, k, delta, urgency, level):
+def start_simulation(sumo, scenario, network, begin, end, interval, output, k, delta, level):
     logging.debug("Finding unused port")
 
     unused_port_lock = UnusedPortLock()
@@ -280,7 +261,7 @@ def start_simulation(sumo, scenario, network, begin, end, interval, output, k, d
 
     try:
         traci.init(remote_port)
-        run(network, begin, end, interval, k, delta, urgency, level)
+        run(network, begin, end, interval, k, delta, level)
     except Exception, e:
         logging.exception("Something bad happened")
     finally:
@@ -314,8 +295,6 @@ def main():
                       action="store", help="Congestion threshold [default: %default]", metavar="DELTA")
     parser.add_option("-l", "--level", dest="level", type="int", default=3, action="store",
                       help="Furthest distance a rerouted vehicle can be from congestion (in number of segments) [default: %default]", metavar="LEVEL")
-    parser.add_option("-u", "--urgency", dest="urgency", default="ACI", action="store", 
-                    help="Urgency function used to compute the  re-routing priority of a vehicle [default: %default]", metavar="URGENCY")
 
     (options, args) = parser.parse_args()
 
@@ -326,7 +305,7 @@ def main():
         logging.warning("Superfluous command line arguments: \"%s\"" % " ".join(args))
 
     start_simulation(options.command, options.scenario, options.network, options.begin, options.end,
-            options.interval, options.output, options.k, options.delta, options.urgency, options.level)
+            options.interval, options.output, options.k, options.delta, options.level)
 
 if __name__ == "__main__":
     main()
