@@ -295,6 +295,8 @@ def main():
                       action="store", help="Congestion threshold [default: %default]", metavar="DELTA")
     parser.add_option("-l", "--level", dest="level", type="int", default=3, action="store",
                       help="Furthest distance a rerouted vehicle can be from congestion (in number of segments) [default: %default]", metavar="LEVEL")
+    parser.add_option("--seed", dest="seed", type="int", default=42, action="store",
+                      help="Seed used for random number generation [default: %default]", metavar="SEED")
 
     (options, args) = parser.parse_args()
 
@@ -304,6 +306,7 @@ def main():
     if args:
         logging.warning("Superfluous command line arguments: \"%s\"" % " ".join(args))
 
+    random.seed(options.seed)
     start_simulation(options.command, options.scenario, options.network, options.begin, options.end,
             options.interval, options.output, options.k, options.delta, options.level)
 

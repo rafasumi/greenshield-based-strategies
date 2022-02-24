@@ -346,28 +346,39 @@ def start_simulation(sumo, scenario, network, begin, end, interval, output, k, d
 def main():
     # Option handling
     parser = OptionParser()
-    parser.add_option("-c", "--command", dest="command", default="sumo", help="The command used to run SUMO [default: %default]", metavar="COMMAND")
-    parser.add_option("-s", "--scenario", dest="scenario", default="scenario/sim.sumocfg", help="A SUMO configuration file [default: %default]", metavar="FILE")
-    parser.add_option("-n", "--network", dest="network", default="scenario/sim.net.xml", help="A SUMO network definition file [default: %default]", metavar="FILE")    
-    parser.add_option("-b", "--begin", dest="begin", type="int", default=1800, action="store", help="The simulation time (s) at which the re-routing begins [default: %default]", metavar="BEGIN")
-    parser.add_option("-e", "--end", dest="end", type="int", default=7200, action="store", help="The simulation time (s) at which the re-routing ends [default: %default]", metavar="END")
-    parser.add_option("-i", "--interval", dest="interval", type="int", default=600, action="store", help="The interval (s) of classification [default: %default]", metavar="INTERVAL")
-    parser.add_option("-o", "--output", dest="output", default="output/EBkSP-tripinfo.xml", help="The XML file at which the output must be written [default: %default]", metavar="FILE")
-    parser.add_option("--logfile", dest="logfile", default="log/sumo-launchd.log", help="log messages to logfile [default: %default]", metavar="FILE")
-    parser.add_option("-k", "--k-paths", dest="k", type="int", default=3, action="store", help="Number o k shortest paths [default: %default]", metavar="K")
-    parser.add_option("-d", "--delta", dest="delta", type="float", default=0.7, action="store", help="Congestion threshold [default: %default]", metavar="DELTA")
-    parser.add_option("-l", "--level", dest="level", type="int", default=3, action="store", help="Furthest distance a rerouted vehicle can be from congestion (in number of segments) [default: %default]", metavar="LEVEL")
-    parser.add_option("-u", "--urgency", dest="urgency", default="ACI", action="store", help="Urgency function used to compute the re-routing priority of a vehicle [default: %default]", metavar="URGENCY")
+    parser.add_option("-c", "--command", dest="command", default="sumo",
+        help="The command used to run SUMO [default: %default]", metavar="COMMAND")
+    parser.add_option("-s", "--scenario", dest="scenario", default="scenario/sim.sumocfg",
+        help="A SUMO configuration file [default: %default]", metavar="FILE")
+    parser.add_option("-n", "--network", dest="network", default="scenario/sim.net.xml",
+        help="A SUMO network definition file [default: %default]", metavar="FILE")    
+    parser.add_option("-b", "--begin", dest="begin", type="int", default=1800, action="store",
+        help="The simulation time (s) at which the re-routing begins [default: %default]", metavar="BEGIN")
+    parser.add_option("-e", "--end", dest="end", type="int", default=7200, action="store",
+        help="The simulation time (s) at which the re-routing ends [default: %default]", metavar="END")
+    parser.add_option("-i", "--interval", dest="interval", type="int", default=600, action="store",
+        help="The interval (s) of classification [default: %default]", metavar="INTERVAL")
+    parser.add_option("-o", "--output", dest="output", default="output/EBkSP-tripinfo.xml",
+        help="The XML file at which the output must be written [default: %default]", metavar="FILE")
+    parser.add_option("--logfile", dest="logfile", default="log/sumo-launchd.log",
+        help="log messages to logfile [default: %default]", metavar="FILE")
+    parser.add_option("-k", "--k-paths", dest="k", type="int", default=3, action="store", 
+        help="Number o k shortest paths [default: %default]", metavar="K")
+    parser.add_option("-d", "--delta", dest="delta", type="float", default=0.7, action="store", 
+        help="Congestion threshold [default: %default]", metavar="DELTA")
+    parser.add_option("-l", "--level", dest="level", type="int", default=3, action="store",
+        help="Furthest distance a rerouted vehicle can be from congestion (in number of segments) [default: %default]", metavar="LEVEL")
+    parser.add_option("-u", "--urgency", dest="urgency", default="ACI", action="store", 
+        help="Urgency function used to compute the  re-routing priority of a vehicle [default: %default]", metavar="URGENCY")
 
-    
     (options, args) = parser.parse_args()
-    
+
     logging.basicConfig(filename=options.logfile, level=logging.DEBUG)
     logging.debug("Logging to %s" % options.logfile)
-    
+
     if args:
         logging.warning("Superfluous command line arguments: \"%s\"" % " ".join(args))
-        
+
     start_simulation(options.command, options.scenario, options.network, options.begin, options.end, options.interval, options.output, options.k, options.delta, options.urgency, options.level)
     
 if __name__ == "__main__":
