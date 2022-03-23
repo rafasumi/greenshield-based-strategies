@@ -11,7 +11,6 @@ import logging
 import thread
 import time
 import networkx as nx
-import numpy as np
 
 from optparse import OptionParser
 from bs4 import BeautifulSoup
@@ -97,23 +96,6 @@ def build_road_graph(network):
 
     return graph
 
-
-def log_output(time):
-    vehicles = traci.vehicle.getIDList()
-    density = len(vehicles)
-    traveltime = []
-
-    for v in vehicles:
-        edge = traci.vehicle.getRoadID(v)
-        if edge.startswith(":"): continue
-        traveltime.append(traci.vehicle.getAdaptedTraveltime(v, time, edge))
-    
-    with open('output/output_DSP.txt', 'a') as output:
-        if len(traveltime) > 0:
-            output.write(str(np.amin(traveltime)) + '\t' + str(np.mean(traveltime)) 
-                + '\t' + str(np.amax(traveltime)) + '\t' + str(density)+'\n')
-
-
 def update_road_attributes(graph, time, begin_of_cycle, delta):
     # @dev - tentar calcular os valores dinamicamente
 
@@ -123,14 +105,16 @@ def update_road_attributes(graph, time, begin_of_cycle, delta):
     congestedRoads = set()
 
     for road in graph.nodes_iter():
-        travel_time = traci.edge.getAdaptedTraveltime(
-            road.encode("ascii"), time)
+        travel_time = traci.edge.getAdaptedTraveltime(road.encode("ascii"), time)
         if travel_time <= 0:
             travel_time = traci.edge.getTraveltime(road.encode("ascii"))
 
+        if road.startswith(':'): 
+            continue
+
+        Ki = traci.edge.getLastStepVehicleNumber(road.encode("ascii"))
+        avgVehicleLength = traci.edge.getLastStepLength(road.encode("ascii"))
         for successor_road in graph.successors_iter(road):
-            Ki = traci.edge.getLastStepVehicleNumber(road.encode("ascii"))
-            avgVehicleLength = traci.edge.getLastStepLength(road.encode("ascii"))
             Kjam = graph.edge[road][successor_road]["length"] / (avgVehicleLength+minGap)
             if (Ki/Kjam) > delta:
                 congestedRoads.add(road.encode("ascii"))
@@ -162,36 +146,36 @@ def dsp_reroute(vehicles, graph):
 
             traci.vehicle.setRoute(vehicle, path)
 
-
 def select_vehicles(graph, congestedRoads, L):
     reverseGraph = nx.DiGraph.reverse(graph)
     selectedVehicles = set()
-
+    
     for road in congestedRoads:
         count = 0
         bfs = []
         for edge in list(nx.bfs_edges(reverseGraph, road)):
+            if edge[1].startswith(":"): continue
+
             if edge[0] in bfs:
                 count += 1
                 bfs = []
-
+            
             if count == L:
                 break
 
-            if count == 0:
-                selectedVehicles = selectedVehicles.union(
-                    set(traci.edge.getLastStepVehicleIDs(edge[0].encode('ascii'))))
-            selectedVehicles = selectedVehicles.union(
-                set(traci.edge.getLastStepVehicleIDs(edge[1].encode('ascii'))))
+            if count == 0 and edge[0] not in bfs:
+                selectedVehicles = selectedVehicles.union(set(traci.edge.getLastStepVehicleIDs(edge[0].encode('ascii'))))
+
+            selectedVehicles = selectedVehicles.union(set(traci.edge.getLastStepVehicleIDs(edge[1].encode('ascii'))))
 
             bfs.append(edge[1])
-
+    
     return selectedVehicles
 
 
 def run(network, begin, end, interval, delta, level):
     logging.debug("Building road graph")
-    road_graph_travel_time = build_road_graph(network)
+    road_graph = build_road_graph(network)
     logging.debug("Finding all simple paths")
 
     # Used to enhance performance only
@@ -204,22 +188,19 @@ def run(network, begin, end, interval, delta, level):
     travel_time_cycle_begin = interval
 
     while step == 1 or traci.simulation.getMinExpectedNumber() > 0:
-        logging.debug("Minimum expected number of vehicles: %d" %
-                      traci.simulation.getMinExpectedNumber())
+        logging.debug("Minimum expected number of vehicles: %d" % traci.simulation.getMinExpectedNumber())
         traci.simulationStep()
-        log_output(step)
         logging.debug("Simulation time %d" % step)
 
         if step >= travel_time_cycle_begin and travel_time_cycle_begin <= end and step % interval == 0:
-            logging.debug(
-                "Updating travel time on roads at simulation time %d" % step)
-            road_graph_travel_time, congestedRoads = update_road_attributes(
-                road_graph_travel_time, step, travel_time_cycle_begin == step, delta)
+            logging.debug("Updating travel time on roads at simulation time %d" % step)
+            road_graph, congestedRoads = update_road_attributes(
+                road_graph, step, travel_time_cycle_begin == step, delta)
 
             if len(congestedRoads) > 0:
-                selectedVehicles = select_vehicles(road_graph_travel_time, congestedRoads, level)
+                selectedVehicles = select_vehicles(road_graph, congestedRoads, level)
                 logging.debug("Rerouting vehicles at simulation time %d" % step)
-                dsp_reroute(selectedVehicles, road_graph_travel_time)
+                dsp_reroute(selectedVehicles, road_graph)
 
         step += 1
 
@@ -265,13 +246,13 @@ def main():
                       help="A SUMO configuration file [default: %default]", metavar="FILE")
     parser.add_option("-n", "--network", dest="network", default="scenario/sim.net.xml",
                       help="A SUMO network definition file [default: %default]", metavar="FILE")
-    parser.add_option("-b", "--begin", dest="begin", type="int", default=1800, action="store",
+    parser.add_option("-b", "--begin", dest="begin", type="int", default=1000, action="store",
                       help="The simulation time (s) at which the re-routing begins [default: %default]", metavar="BEGIN")
-    parser.add_option("-e", "--end", dest="end", type="int", default=7200, action="store",
+    parser.add_option("-e", "--end", dest="end", type="int", default=10000, action="store",
                       help="The simulation time (s) at which the re-routing ends [default: %default]", metavar="END")
-    parser.add_option("-i", "--interval", dest="interval", type="int", default=600, action="store",
+    parser.add_option("-i", "--interval", dest="interval", type="int", default=900, action="store",
                       help="The interval (s) of classification [default: %default]", metavar="INTERVAL")
-    parser.add_option("-o", "--output", dest="output", default="output/DSP-tripinfo.xml",
+    parser.add_option("-o", "--output", dest="output", default="output/DSP-GS-tripinfo.xml",
                       help="The XML file at which the output must be written [default: %default]", metavar="FILE")
     parser.add_option("--logfile", dest="logfile", default="log/sumo-launchd.log",
                       help="log messages to logfile [default: %default]", metavar="FILE")
