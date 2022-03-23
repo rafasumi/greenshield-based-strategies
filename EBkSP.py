@@ -11,7 +11,6 @@ import logging
 import thread
 import time
 import networkx as nx
-import numpy as np
 import math
 
 from k_shortest_paths import k_shortest_paths
@@ -100,31 +99,6 @@ def build_road_graph(network):
 
     return graph
 
-def log_densidade_speed(time):
-    vehicles = traci.vehicle.getIDList()
-    density = len(vehicles)
-    speed = []
-
-    output = open('output/output_EBkSP.txt', 'a')
-
-    for v in vehicles:
-        lane_pos = traci.vehicle.getLanePosition(v)
-        edge = traci.vehicle.getRoadID(v)
-        if edge.startswith(":"): continue
-        position = traci.vehicle.getPosition(v)        
-        route = traci.vehicle.getRoute(v)
-        index = route.index(edge)
-        if index > 0:
-            distance = 500 * (index - 1) + lane_pos
-        else:
-            distance = lane_pos
-
-        traveltime = traci.vehicle.getAdaptedTraveltime(v, time, edge)
-        speed.append(float(distance)/float(time))
-    
-    if len(speed) > 0:
-        output.write(str(np.amin(speed) * 3.6) + '\t' + str(np.average(speed) * 3.6) + '\t' + str(np.amax(speed) * 3.6) + '\t' + str(density)+'\n')
-
 def update_road_attributes(graph, time, begin_of_cycle, delta):    
     congestedRoads = set()
     
@@ -136,9 +110,12 @@ def update_road_attributes(graph, time, begin_of_cycle, delta):
         if travel_time <= 0:
             travel_time = traci.edge.getTraveltime(road.encode("ascii"))
         
+        if road.startswith(':'): 
+            continue
+
+        Ki = traci.edge.getLastStepVehicleNumber(road.encode("ascii"))
+        avgVehicleLength = traci.edge.getLastStepLength(road.encode("ascii"))
         for successor_road in graph.successors_iter(road):
-            Ki = traci.edge.getLastStepVehicleNumber(road.encode("ascii"))
-            avgVehicleLength = traci.edge.getLastStepLength(road.encode("ascii"))
             Kjam = graph.edge[road][successor_road]["length"]/(avgVehicleLength+MIN_GAP)
             capacity_sum += Kjam
             counter += 1
@@ -153,16 +130,26 @@ def update_road_attributes(graph, time, begin_of_cycle, delta):
                 t = t if t > 0 else travel_time
                 graph.edge[road][successor_road]["weight"] = t
 
-    return (graph, congestedRoads, capacity_sum/counter)
+    return (graph, congestedRoads, float(capacity_sum)/counter)
 
-def sort_by_urgency(vehicles, method, time):
+def getRemTravelTime(route, graph, congestedRoads):
+    RemTT = 0
+    RemFFTT = 0
+    
+    for i in range(len(route)):
+        if i != len(route) - 1:
+            RemTT += graph[route[i]][route[i+1]]["weight"]
+            if route[i] not in congestedRoads:
+                RemFFTT += graph[route[i]][route[i+1]]["weight"]
+
+    return (RemTT, RemFFTT)
+
+def sort_by_urgency(graph, vehicles, method, congestedRoads):
     vehicle_dict = {}
     
     for vehicle in vehicles:
-        edgeID = traci.vehicle.getRoadID(vehicle)
-        RemTT = traci.vehicle.getAdaptedTraveltime(vehicle, time, edgeID)
-        lane = traci.vehicle.getLaneID(vehicle)
-        RemFFTT = traci.lane.getLength(lane) / traci.vehicle.getAllowedSpeed(vehicle)
+        route = traci.vehicle.getRoute(vehicle)
+        RemTT, RemFFTT = getRemTravelTime(route, graph, congestedRoads)
         
         if method == "RCI":
             urgency = (RemTT - RemFFTT)/RemFFTT
@@ -171,33 +158,39 @@ def sort_by_urgency(vehicles, method, time):
         
         vehicle_dict[vehicle] = urgency
     
-    return sorted(vehicle_dict, key=vehicle_dict.get)
+    return sorted(vehicle_dict, key=vehicle_dict.get, reverse=True)
 
 def computePopularity(graph, path, footprint_counter, avgCapacity):
     N = 0
-    for edge in footprint_counter:
-        N += footprint_counter[edge]
+    for road in footprint_counter:
+        N += footprint_counter[road]
 
     sum = 0
     for road in path:
         for successor_road in graph.successors_iter(road):
-            fc = footprint_counter.get((road, successor_road), 0)
-            if fc == 0: continue
+            fc = footprint_counter.get(road, 0)
 
             avgVehicleLength = traci.edge.getLastStepLength(road.encode("ascii"))
             capacity = graph.edge[road][successor_road]["length"]/(avgVehicleLength+MIN_GAP)
             omega = avgCapacity/capacity
+
+            if fc == 0 or capacity == 0: continue
             
             sum += omega * fc/N * math.log(fc/N)
+    
+    try:
+        popularity = math.exp(-sum)
+    except OverflowError:
+        popularity = float('inf')
 
-    return math.exp(-sum)
+    return popularity
 
 def getLeastPopularPath(graph, paths, footprint_counter, avgCapacity):
     leastPopular = None
-    smallestPopularity = np.inf
+    smallestPopularity = float('inf')
     for path in paths:
         popularity = computePopularity(graph, path, footprint_counter, avgCapacity)
-        if popularity < smallestPopularity:
+        if popularity <= smallestPopularity:
             leastPopular = path
             smallestPopularity = popularity
     
@@ -208,9 +201,8 @@ def ebksp_reroute(graph, vehicles, allPaths, avgCapacity):
     firstVehicle = True
 
     for vehicle in vehicles:
-        source = traci.vehicle.getRoadID(vehicle)
-        if source.startswith(":"): continue
         route = traci.vehicle.getRoute(vehicle)
+        source = traci.vehicle.getRoadID(vehicle)
         destination = route[-1]
 
         if source != destination:
@@ -225,11 +217,10 @@ def ebksp_reroute(graph, vehicles, allPaths, avgCapacity):
             traci.vehicle.setRoute(vehicle, newPath)
 
             for road in newPath:
-                for successor_road in graph.successors_iter(road):
-                    if (road, successor_road) in footprint_counter:
-                        footprint_counter[(road, successor_road)] += 1
+                    if road in footprint_counter:
+                        footprint_counter[road] += 1
                     else:
-                        footprint_counter[(road, successor_road)] = 1
+                        footprint_counter[road] = 1
 
 def updateODPairs(selectedVehicles):
     odPairs = set()
@@ -243,12 +234,11 @@ def updateODPairs(selectedVehicles):
     
     return odPairs
 
-def computeAllkShortestPaths(graph, odPairs, K):
-    allPaths = {}
-
+def computeAllkShortestPaths(graph, odPairs, K, allPaths):
     for source, destination in odPairs:
+        if (source, destination) in allPaths: continue
+
         if source != destination:
-            logging.debug("Calculating shortest paths for pair (%s, %s)" % (source, destination))
             _, k_paths = k_shortest_paths(graph, source, destination, K, "weight")
 
             allPaths[(source, destination)] = k_paths
@@ -263,6 +253,8 @@ def select_vehicles(graph, congestedRoads, L):
         count = 0
         bfs = []
         for edge in list(nx.bfs_edges(reverseGraph, road)):
+            if edge[1].startswith(":"): continue
+
             if edge[0] in bfs:
                 count += 1
                 bfs = []
@@ -270,8 +262,9 @@ def select_vehicles(graph, congestedRoads, L):
             if count == L:
                 break
 
-            if count == 0:
+            if count == 0 and edge[0] not in bfs:
                 selectedVehicles = selectedVehicles.union(set(traci.edge.getLastStepVehicleIDs(edge[0].encode('ascii'))))
+
             selectedVehicles = selectedVehicles.union(set(traci.edge.getLastStepVehicleIDs(edge[1].encode('ascii'))))
 
             bfs.append(edge[1])
@@ -285,6 +278,7 @@ def run(network, begin, end, interval, K, delta, urgency, level):
     
     # Used to enhance performance only
     buffered_paths = {}
+    allPaths = {}
     
     logging.debug("Running simulation now")    
     step = 1
@@ -295,7 +289,6 @@ def run(network, begin, end, interval, K, delta, urgency, level):
     while step == 1 or traci.simulation.getMinExpectedNumber() > 0:
         logging.debug("Minimum expected number of vehicles: %d" % traci.simulation.getMinExpectedNumber())
         traci.simulationStep()
-        log_densidade_speed(step) 
         logging.debug("Simulation time %d" % step)
         
         if step >= travel_time_cycle_begin and travel_time_cycle_begin <= end and step % interval == 0:
@@ -305,9 +298,9 @@ def run(network, begin, end, interval, K, delta, urgency, level):
             
             if len(congestedRoads) > 0:
                 selectedVehicles = select_vehicles(road_graph, congestedRoads, level)
-                sortedVehicles = sort_by_urgency(selectedVehicles, urgency, step)
+                sortedVehicles = sort_by_urgency(road_graph, selectedVehicles, urgency, congestedRoads)
                 odPairs = updateODPairs(sortedVehicles)
-                allPaths = computeAllkShortestPaths(road_graph, odPairs, K)
+                allPaths = computeAllkShortestPaths(road_graph, odPairs, K, allPaths)
                 logging.debug("Rerouting vehicles at simulation time %d" % step)
                 ebksp_reroute(road_graph, sortedVehicles, allPaths, avg_capacity)
 
@@ -352,13 +345,13 @@ def main():
         help="A SUMO configuration file [default: %default]", metavar="FILE")
     parser.add_option("-n", "--network", dest="network", default="scenario/sim.net.xml",
         help="A SUMO network definition file [default: %default]", metavar="FILE")    
-    parser.add_option("-b", "--begin", dest="begin", type="int", default=1800, action="store",
+    parser.add_option("-b", "--begin", dest="begin", type="int", default=1000, action="store",
         help="The simulation time (s) at which the re-routing begins [default: %default]", metavar="BEGIN")
-    parser.add_option("-e", "--end", dest="end", type="int", default=7200, action="store",
+    parser.add_option("-e", "--end", dest="end", type="int", default=10000, action="store",
         help="The simulation time (s) at which the re-routing ends [default: %default]", metavar="END")
-    parser.add_option("-i", "--interval", dest="interval", type="int", default=600, action="store",
+    parser.add_option("-i", "--interval", dest="interval", type="int", default=900, action="store",
         help="The interval (s) of classification [default: %default]", metavar="INTERVAL")
-    parser.add_option("-o", "--output", dest="output", default="output/EBkSP-tripinfo.xml",
+    parser.add_option("-o", "--output", dest="output", default="output/EBkSP-GS-tripinfo.xml",
         help="The XML file at which the output must be written [default: %default]", metavar="FILE")
     parser.add_option("--logfile", dest="logfile", default="log/sumo-launchd.log",
         help="log messages to logfile [default: %default]", metavar="FILE")
